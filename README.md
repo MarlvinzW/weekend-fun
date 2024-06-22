@@ -18,7 +18,7 @@
 ## OUTPUT
 
 
-![](/img/Screenshot 2024-06-21 at 23.13.12.png "Terminal output")
+![](/img/Screenshot 2024-06-22 at 10.21.42.png "Terminal output")
 
 ![Translation details when done processing](/img/Screenshot 2024-06-21 at 23.13.49.png "Processing complete")
 
