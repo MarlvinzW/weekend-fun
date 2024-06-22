@@ -12,16 +12,15 @@ import zw.co.dreamhub.weekend_fun.domain.models.Translation;
 
 import java.io.File;
 import java.lang.reflect.Field;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.SQLException;
-import java.sql.Timestamp;
+import java.sql.*;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.stream.Stream;
 
 /**
  * @author Marlvin Chihota
@@ -37,6 +36,20 @@ public class FileService {
     private final FileEnv env;
     private final ObjectMapper mapper;
     private final HikariDataSource hikariDataSource;
+
+    private void persist(PreparedStatement statement,
+                         Product product,
+                         Field classField,
+                         Object value) throws SQLException {
+//        statement.clearParameters();
+        statement.setTimestamp(1, Timestamp.from(Instant.now()));
+        statement.setInt(2, product.getProductId());
+        statement.setString(3, classField.getName());
+        statement.setString(4, value.toString());
+//                            statement.executeUpdate();
+        statement.addBatch();
+    }
+
 
     public void process() {
 
@@ -56,40 +69,44 @@ public class FileService {
                     products.length,
                     ChronoUnit.SECONDS.between(startTime, loadDone));
 
-            String query = String.format("INSERT INTO %s (id, created_at, product_id, lang_code, text) VALUES(?, ?, ?, ?, ?)"
+            String query = String.format("INSERT INTO %s (created_at, product_id, lang_code, text) VALUES(?, ?, ?, ?)"
                     , Translation.class.getAnnotation(Table.class).name());
-            AtomicInteger id = new AtomicInteger(1);
 
-            try (
-                    Connection connection = hikariDataSource.getConnection();
-                    PreparedStatement statement = connection.prepareStatement(query)
-            ) {
-                Arrays.stream(products).forEach(product -> {
+            Connection connection = null;
+            ReentrantLock lock = new ReentrantLock();
+            try {
+                connection = hikariDataSource.getConnection();
+                PreparedStatement statement = connection.prepareStatement(query);
+                Stream.of(products).parallel().forEach(product -> {
                     List<Field> fields = Arrays.asList(Product.Translations.class.getDeclaredFields());
                     fields.forEach(classField -> {
                         try {
                             Field field = product.getTranslations().getClass().getDeclaredField(classField.getName());
                             field.setAccessible(true);
                             Object value = field.get(product.getTranslations());
-                            statement.clearParameters();
-                            statement.setInt(1, id.get());
-                            statement.setTimestamp(2, Timestamp.from(Instant.now()));
-                            statement.setInt(3, product.getProductId());
-                            statement.setString(4, classField.getName());
-                            statement.setString(5, value.toString());
-//                            statement.executeUpdate();
-                            statement.addBatch();
-                            id.addAndGet(1);
+                            lock.lock();
+                            persist(statement, product, classField, value);
+                            lock.unlock();
                         } catch (NoSuchFieldException e) {
                             log.info("No field exception : {}", e.getMessage());
                         } catch (IllegalAccessException e) {
                             log.info("Illegal access exception : {}", e.getMessage());
                         } catch (SQLException e) {
-                            log.info("SQL exception : {}", e.getMessage());
+                            log.info("SQL inner exception : {}", e.getMessage());
                         }
                     });
                 });
                 statement.executeBatch();
+            }
+            catch (SQLException e) {
+                log.info("SQL main exception : {}", e.getMessage());
+            }
+            finally {
+                if(connection != null){
+                    if(!connection.isClosed()){
+                        connection.close();
+                    }
+                }
             }
 
             log.info("Saved : {} products in : {} seconds",
